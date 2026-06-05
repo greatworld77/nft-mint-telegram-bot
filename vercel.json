@@ -1,5 +1,7 @@
 {
   "functions": {
-    "api/bot.js": { "maxDuration": 60 }
+    "api/bot.js": {
+      "maxDuration": 60
+    }
   }
 }
