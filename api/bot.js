@@ -93,50 +93,44 @@ bot.command('cancel', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
-  const request = await getActiveRequest(ctx);
+  try {
+    await ctx.reply('Image received. Uploading now...');
 
-  if (request.step !== 'AWAITING_IMAGE') {
+    const request = await getActiveRequest(ctx);
+
+    if (request.step !== 'AWAITING_IMAGE') {
+      return ctx.reply(
+        'I already received your image. Please continue with the next step.'
+      );
+    }
+
+    const photos = ctx.message.photo;
+    const largestPhoto = photos[photos.length - 1];
+
+    const buffer = await getTelegramFileBuffer(largestPhoto.file_id);
+
+    const upload = await uploadBuffer(
+      buffer,
+      'telegram-nft/originals'
+    );
+
+    request.originalImageUrl = upload.secure_url;
+    request.originalCloudinaryPublicId = upload.public_id;
+    request.step = 'AWAITING_WALLET';
+
+    await request.save();
+
     return ctx.reply(
-      'I already received your image. Please continue with the next step.'
+      'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
+    );
+  } catch (error) {
+    console.error('PHOTO ERROR:', error);
+
+    return ctx.reply(
+      `Image upload failed. Please check Cloudinary/MongoDB settings.\n\nError: ${error.message}`
     );
   }
-
-  const photos = ctx.message.photo;
-  const largestPhoto = photos[photos.length - 1];
-
-  const buffer = await getTelegramFileBuffer(largestPhoto.file_id);
-
-  const upload = await uploadBuffer(
-    buffer,
-    'telegram-nft/originals'
-  );
-
-  request.originalImageUrl = upload.secure_url;
-  request.originalCloudinaryPublicId = upload.public_id;
-  request.step = 'AWAITING_WALLET';
-
-  await request.save();
-
-  await ctx.reply(
-    'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
-  );
 });
-
-bot.on('document', async (ctx) => {
-  const mime = ctx.message.document?.mime_type || '';
-
-  if (!mime.startsWith('image/')) {
-    return ctx.reply('Please send an image file only.');
-  }
-
-  const request = await getActiveRequest(ctx);
-
-  if (request.step !== 'AWAITING_IMAGE') {
-    return ctx.reply(
-      'I already received your image. Please continue with the next step.'
-    );
-  }
-
   const buffer = await getTelegramFileBuffer(
     ctx.message.document.file_id
   );
