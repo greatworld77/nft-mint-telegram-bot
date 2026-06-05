@@ -22,12 +22,8 @@ async function getActiveRequest(ctx) {
 
   let request = await MintRequest.findOne({
     telegramUserId,
-    step: {
-      $nin: ['DONE', 'FAILED']
-    }
-  }).sort({
-    createdAt: -1
-  });
+    step: { $nin: ['DONE', 'FAILED'] }
+  }).sort({ createdAt: -1 });
 
   if (!request) {
     request = await MintRequest.create({
@@ -40,19 +36,37 @@ async function getActiveRequest(ctx) {
   return request;
 }
 
+bot.catch(async (err, ctx) => {
+  console.error('BOT ERROR:', err);
+
+  try {
+    await ctx.reply(`Something went wrong: ${err.message}`);
+  } catch {}
+});
+
 bot.start(async (ctx) => {
   await connectDB();
 
-  const telegramUserId = String(ctx.from.id);
-  const chatId = String(ctx.chat.id);
+  await MintRequest.updateMany(
+    {
+      telegramUserId: String(ctx.from.id),
+      step: { $nin: ['DONE', 'FAILED'] }
+    },
+    {
+      $set: {
+        step: 'FAILED',
+        error: 'Restarted by user'
+      }
+    }
+  );
 
   await MintRequest.create({
-    telegramUserId,
-    chatId,
+    telegramUserId: String(ctx.from.id),
+    chatId: String(ctx.chat.id),
     step: 'AWAITING_IMAGE'
   });
 
-  await ctx.reply(
+  return ctx.reply(
 `Welcome to Pixel NFT Mint Bot.
 
 How to use this bot:
@@ -77,9 +91,7 @@ bot.command('cancel', async (ctx) => {
   await MintRequest.updateMany(
     {
       telegramUserId: String(ctx.from.id),
-      step: {
-        $nin: ['DONE', 'FAILED']
-      }
+      step: { $nin: ['DONE', 'FAILED'] }
     },
     {
       $set: {
@@ -89,7 +101,7 @@ bot.command('cancel', async (ctx) => {
     }
   );
 
-  await ctx.reply('Cancelled. Send /start to begin again.');
+  return ctx.reply('Cancelled. Send /start to begin again.');
 });
 
 bot.on('photo', async (ctx) => {
@@ -105,6 +117,11 @@ bot.on('photo', async (ctx) => {
     }
 
     const photos = ctx.message.photo;
+
+    if (!photos || photos.length === 0) {
+      return ctx.reply('No image found. Please send the image again.');
+    }
+
     const largestPhoto = photos[photos.length - 1];
 
     const buffer = await getTelegramFileBuffer(largestPhoto.file_id);
@@ -113,6 +130,10 @@ bot.on('photo', async (ctx) => {
       buffer,
       'telegram-nft/originals'
     );
+
+    if (!upload?.secure_url) {
+      throw new Error('Cloudinary upload failed. No image URL returned.');
+    }
 
     request.originalImageUrl = upload.secure_url;
     request.originalCloudinaryPublicId = upload.public_id;
@@ -127,28 +148,62 @@ bot.on('photo', async (ctx) => {
     console.error('PHOTO ERROR:', error);
 
     return ctx.reply(
-      `Image upload failed. Please check Cloudinary/MongoDB settings.\n\nError: ${error.message}`
+      `Image upload failed.\n\nError: ${error.message}\n\nPlease check Cloudinary, MongoDB, and Telegram token settings.`
     );
   }
 });
-  const buffer = await getTelegramFileBuffer(
-    ctx.message.document.file_id
-  );
 
-  const upload = await uploadBuffer(
-    buffer,
-    'telegram-nft/originals'
-  );
+bot.on('document', async (ctx) => {
+  try {
+    const document = ctx.message.document;
 
-  request.originalImageUrl = upload.secure_url;
-  request.originalCloudinaryPublicId = upload.public_id;
-  request.step = 'AWAITING_WALLET';
+    if (!document) {
+      return ctx.reply('No file found. Please send an image.');
+    }
 
-  await request.save();
+    const mime = document.mime_type || '';
 
-  await ctx.reply(
-    'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
-  );
+    if (!mime.startsWith('image/')) {
+      return ctx.reply('Please send an image file only.');
+    }
+
+    await ctx.reply('Image file received. Uploading now...');
+
+    const request = await getActiveRequest(ctx);
+
+    if (request.step !== 'AWAITING_IMAGE') {
+      return ctx.reply(
+        'I already received your image. Please continue with the next step.'
+      );
+    }
+
+    const buffer = await getTelegramFileBuffer(document.file_id);
+
+    const upload = await uploadBuffer(
+      buffer,
+      'telegram-nft/originals'
+    );
+
+    if (!upload?.secure_url) {
+      throw new Error('Cloudinary upload failed. No image URL returned.');
+    }
+
+    request.originalImageUrl = upload.secure_url;
+    request.originalCloudinaryPublicId = upload.public_id;
+    request.step = 'AWAITING_WALLET';
+
+    await request.save();
+
+    return ctx.reply(
+      'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
+    );
+  } catch (error) {
+    console.error('DOCUMENT ERROR:', error);
+
+    return ctx.reply(
+      `Image upload failed.\n\nError: ${error.message}\n\nPlease check Cloudinary, MongoDB, and Telegram token settings.`
+    );
+  }
 });
 
 bot.on('text', async (ctx) => {
@@ -187,14 +242,10 @@ After payment, send me the transaction hash.`
 
   if (request.step === 'AWAITING_TX') {
     if (!/^0x([A-Fa-f0-9]{64})$/.test(text)) {
-      return ctx.reply(
-        'Invalid transaction hash. Please send a valid tx hash.'
-      );
+      return ctx.reply('Invalid transaction hash. Please send a valid tx hash.');
     }
 
-    const duplicate = await MintRequest.findOne({
-      txHash: text
-    });
+    const duplicate = await MintRequest.findOne({ txHash: text });
 
     if (duplicate) {
       return ctx.reply(
@@ -218,18 +269,14 @@ After payment, send me the transaction hash.`
 
         await request.save();
 
-        return ctx.reply(
-          `Payment not confirmed: ${verified.reason}`
-        );
+        return ctx.reply(`Payment not confirmed: ${verified.reason}`);
       }
 
       await ctx.reply(
         'Your payment is received successfully. Creating your pixelated NFT now.'
       );
 
-      const pixelUrl = await createPixelArtWithNovita(
-        request.originalImageUrl
-      );
+      const pixelUrl = await createPixelArtWithNovita(request.originalImageUrl);
 
       const pixelImage = await axios.get(pixelUrl, {
         responseType: 'arraybuffer'
@@ -240,10 +287,13 @@ After payment, send me the transaction hash.`
         'telegram-nft/pixelated'
       );
 
+      if (!pixelUpload?.secure_url) {
+        throw new Error('Cloudinary pixel image upload failed.');
+      }
+
       const metadata = {
         name: 'Pixel Mint NFT',
-        description:
-          'Pixelated NFT created from a Telegram user image.',
+        description: 'Pixelated NFT created from a Telegram user image.',
         image: pixelUpload.secure_url,
         attributes: [
           {
@@ -261,6 +311,10 @@ After payment, send me the transaction hash.`
         metadata,
         'telegram-nft/metadata'
       );
+
+      if (!metadataUpload?.secure_url) {
+        throw new Error('Cloudinary metadata upload failed.');
+      }
 
       const mint = await mintNFT(
         request.userWallet,
@@ -288,7 +342,7 @@ Image: ${pixelUpload.secure_url}`
 
       await request.save();
 
-      console.error(error);
+      console.error('MINT ERROR:', error);
 
       return ctx.reply(
         `Mint failed: ${error.message}\n\nSend /start to try again.`
@@ -297,9 +351,7 @@ Image: ${pixelUpload.secure_url}`
   }
 
   if (request.step === 'PROCESSING') {
-    return ctx.reply(
-      'Your NFT is still processing. Please wait.'
-    );
+    return ctx.reply('Your NFT is still processing. Please wait.');
   }
 
   return ctx.reply('Send /start to begin.');
@@ -324,12 +376,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    await bot.handleUpdate(req.body, res);
+    await bot.handleUpdate(req.body);
+    return res.status(200).send('OK');
   } catch (error) {
-    console.error(error);
+    console.error('WEBHOOK ERROR:', error);
 
     if (!res.headersSent) {
-      res.status(500).send('Bot error');
+      return res.status(500).send('Bot error');
     }
   }
 }
