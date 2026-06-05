@@ -1,18 +1,25 @@
 import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import { ethers } from 'ethers';
-import axios from 'axios';
 
 import { connectDB } from '../lib/db.js';
 import MintRequest from '../models/MintRequest.js';
 
-import { uploadBuffer, uploadJson } from '../lib/cloudinary.js';
+import { uploadBuffer } from '../lib/cloudinary.js';
 import { getTelegramFileBuffer } from '../lib/telegram.js';
 import { verifyPayment } from '../lib/payment.js';
 import { createPixelArtWithNovita } from '../lib/novita.js';
 import { mintNFT } from '../lib/mint.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+function getErrorMessage(error) {
+  if (error.response?.data) {
+    return JSON.stringify(error.response.data);
+  }
+
+  return error.message || 'Unknown error';
+}
 
 async function getActiveRequest(ctx) {
   await connectDB();
@@ -40,7 +47,7 @@ bot.catch(async (err, ctx) => {
   console.error('BOT ERROR:', err);
 
   try {
-    await ctx.reply(`Something went wrong: ${err.message}`);
+    await ctx.reply(`Something went wrong: ${getErrorMessage(err)}`);
   } catch {}
 });
 
@@ -78,7 +85,7 @@ How to use this bot:
 ${process.env.PAYMENT_RECEIVER_ADDRESS}
 
 4. Send your transaction hash.
-5. Your image will become a pixelated NFT.
+5. Your image will become an NFT.
 6. The NFT will be minted to your wallet.
 
 Please send your image now.`
@@ -148,7 +155,7 @@ bot.on('photo', async (ctx) => {
     console.error('PHOTO ERROR:', error);
 
     return ctx.reply(
-      `Image upload failed.\n\nError: ${error.message}\n\nPlease check Cloudinary, MongoDB, and Telegram token settings.`
+      `Image upload failed.\n\nError: ${getErrorMessage(error)}`
     );
   }
 });
@@ -201,7 +208,7 @@ bot.on('document', async (ctx) => {
     console.error('DOCUMENT ERROR:', error);
 
     return ctx.reply(
-      `Image upload failed.\n\nError: ${error.message}\n\nPlease check Cloudinary, MongoDB, and Telegram token settings.`
+      `Image upload failed.\n\nError: ${getErrorMessage(error)}`
     );
   }
 });
@@ -273,28 +280,15 @@ After payment, send me the transaction hash.`
       }
 
       await ctx.reply(
-        'Your payment is received successfully. Creating your pixelated NFT now.'
+        'Your payment is received successfully. Creating your NFT now.'
       );
 
       const pixelUrl = await createPixelArtWithNovita(request.originalImageUrl);
 
-      const pixelImage = await axios.get(pixelUrl, {
-        responseType: 'arraybuffer'
-      });
-
-      const pixelUpload = await uploadBuffer(
-        Buffer.from(pixelImage.data),
-        'telegram-nft/pixelated'
-      );
-
-      if (!pixelUpload?.secure_url) {
-        throw new Error('Cloudinary pixel image upload failed.');
-      }
-
       const metadata = {
         name: 'Pixel Mint NFT',
-        description: 'Pixelated NFT created from a Telegram user image.',
-        image: pixelUpload.secure_url,
+        description: 'NFT created from a Telegram user image.',
+        image: pixelUrl,
         attributes: [
           {
             trait_type: 'Style',
@@ -307,22 +301,19 @@ After payment, send me the transaction hash.`
         ]
       };
 
-      const metadataUpload = await uploadJson(
-        metadata,
-        'telegram-nft/metadata'
-      );
+      const metadataBase64 = Buffer.from(
+        JSON.stringify(metadata)
+      ).toString('base64');
 
-      if (!metadataUpload?.secure_url) {
-        throw new Error('Cloudinary metadata upload failed.');
-      }
+      const tokenURI = `data:application/json;base64,${metadataBase64}`;
 
       const mint = await mintNFT(
         request.userWallet,
-        metadataUpload.secure_url
+        tokenURI
       );
 
-      request.pixelImageUrl = pixelUpload.secure_url;
-      request.metadataUrl = metadataUpload.secure_url;
+      request.pixelImageUrl = pixelUrl;
+      request.metadataUrl = tokenURI;
       request.mintTxHash = mint.txHash;
       request.tokenId = mint.tokenId;
       request.step = 'DONE';
@@ -334,18 +325,18 @@ After payment, send me the transaction hash.`
 
 Token ID: ${mint.tokenId || 'Check transaction'}
 Mint TX: ${mint.txHash}
-Image: ${pixelUpload.secure_url}`
+Image: ${pixelUrl}`
       );
     } catch (error) {
       request.step = 'FAILED';
-      request.error = error.message;
+      request.error = getErrorMessage(error);
 
       await request.save();
 
       console.error('MINT ERROR:', error);
 
       return ctx.reply(
-        `Mint failed: ${error.message}\n\nSend /start to try again.`
+        `Mint failed: ${getErrorMessage(error)}\n\nSend /start to try again.`
       );
     }
   }
