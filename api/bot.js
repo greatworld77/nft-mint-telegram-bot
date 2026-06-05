@@ -5,6 +5,7 @@ import axios from 'axios';
 
 import { connectDB } from '../lib/db.js';
 import MintRequest from '../models/MintRequest.js';
+
 import { uploadBuffer, uploadJson } from '../lib/cloudinary.js';
 import { getTelegramFileBuffer } from '../lib/telegram.js';
 import { verifyPayment } from '../lib/payment.js';
@@ -19,20 +20,24 @@ async function getActiveRequest(ctx) {
   const telegramUserId = String(ctx.from.id);
   const chatId = String(ctx.chat.id);
 
-  let req = await MintRequest.findOne({
+  let request = await MintRequest.findOne({
     telegramUserId,
-    step: { $nin: ['DONE', 'FAILED'] }
-  }).sort({ createdAt: -1 });
+    step: {
+      $nin: ['DONE', 'FAILED']
+    }
+  }).sort({
+    createdAt: -1
+  });
 
-  if (!req) {
-    req = await MintRequest.create({
+  if (!request) {
+    request = await MintRequest.create({
       telegramUserId,
       chatId,
       step: 'AWAITING_IMAGE'
     });
   }
 
-  return req;
+  return request;
 }
 
 bot.start(async (ctx) => {
@@ -50,13 +55,17 @@ bot.start(async (ctx) => {
   await ctx.reply(
 `Welcome to Pixel NFT Mint Bot.
 
-How it works:
-1. Send me an image.
+How to use this bot:
+
+1. Send an image.
 2. Send your wallet address.
 3. Pay ${process.env.MINT_PRICE_ETH} Sepolia ETH to:
+
 ${process.env.PAYMENT_RECEIVER_ADDRESS}
-4. Send the transaction hash.
-5. I will create a pixelated NFT and mint it to your wallet.
+
+4. Send your transaction hash.
+5. Your image will become a pixelated NFT.
+6. The NFT will be minted to your wallet.
 
 Please send your image now.`
   );
@@ -68,7 +77,9 @@ bot.command('cancel', async (ctx) => {
   await MintRequest.updateMany(
     {
       telegramUserId: String(ctx.from.id),
-      step: { $nin: ['DONE', 'FAILED'] }
+      step: {
+        $nin: ['DONE', 'FAILED']
+      }
     },
     {
       $set: {
@@ -82,25 +93,33 @@ bot.command('cancel', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
-  const req = await getActiveRequest(ctx);
+  const request = await getActiveRequest(ctx);
 
-  if (req.step !== 'AWAITING_IMAGE') {
-    return ctx.reply('I already received your image. Please continue with the next step.');
+  if (request.step !== 'AWAITING_IMAGE') {
+    return ctx.reply(
+      'I already received your image. Please continue with the next step.'
+    );
   }
 
   const photos = ctx.message.photo;
-  const largest = photos[photos.length - 1];
+  const largestPhoto = photos[photos.length - 1];
 
-  const buffer = await getTelegramFileBuffer(largest.file_id);
-  const upload = await uploadBuffer(buffer, 'telegram-nft/originals');
+  const buffer = await getTelegramFileBuffer(largestPhoto.file_id);
 
-  req.originalImageUrl = upload.secure_url;
-  req.originalCloudinaryPublicId = upload.public_id;
-  req.step = 'AWAITING_WALLET';
+  const upload = await uploadBuffer(
+    buffer,
+    'telegram-nft/originals'
+  );
 
-  await req.save();
+  request.originalImageUrl = upload.secure_url;
+  request.originalCloudinaryPublicId = upload.public_id;
+  request.step = 'AWAITING_WALLET';
 
-  await ctx.reply('Your image is received. Now send your ETH wallet address where you want to receive the NFT.');
+  await request.save();
+
+  await ctx.reply(
+    'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
+  );
 });
 
 bot.on('document', async (ctx) => {
@@ -110,22 +129,32 @@ bot.on('document', async (ctx) => {
     return ctx.reply('Please send an image file only.');
   }
 
-  const req = await getActiveRequest(ctx);
+  const request = await getActiveRequest(ctx);
 
-  if (req.step !== 'AWAITING_IMAGE') {
-    return ctx.reply('I already received your image. Please continue with the next step.');
+  if (request.step !== 'AWAITING_IMAGE') {
+    return ctx.reply(
+      'I already received your image. Please continue with the next step.'
+    );
   }
 
-  const buffer = await getTelegramFileBuffer(ctx.message.document.file_id);
-  const upload = await uploadBuffer(buffer, 'telegram-nft/originals');
+  const buffer = await getTelegramFileBuffer(
+    ctx.message.document.file_id
+  );
 
-  req.originalImageUrl = upload.secure_url;
-  req.originalCloudinaryPublicId = upload.public_id;
-  req.step = 'AWAITING_WALLET';
+  const upload = await uploadBuffer(
+    buffer,
+    'telegram-nft/originals'
+  );
 
-  await req.save();
+  request.originalImageUrl = upload.secure_url;
+  request.originalCloudinaryPublicId = upload.public_id;
+  request.step = 'AWAITING_WALLET';
 
-  await ctx.reply('Your image is received. Now send your ETH wallet address where you want to receive the NFT.');
+  await request.save();
+
+  await ctx.reply(
+    'Your image is received. Now send your ETH wallet address where you want to receive the NFT.'
+  );
 });
 
 bot.on('text', async (ctx) => {
@@ -133,47 +162,56 @@ bot.on('text', async (ctx) => {
 
   if (text.startsWith('/')) return;
 
-  const req = await getActiveRequest(ctx);
+  const request = await getActiveRequest(ctx);
 
-  if (req.step === 'AWAITING_IMAGE') {
+  if (request.step === 'AWAITING_IMAGE') {
     return ctx.reply('Please send an image first.');
   }
 
-  if (req.step === 'AWAITING_WALLET') {
+  if (request.step === 'AWAITING_WALLET') {
     if (!ethers.isAddress(text)) {
-      return ctx.reply('Invalid wallet address. Please send a valid ETH wallet address.');
+      return ctx.reply(
+        'Invalid wallet address. Please send a valid ETH wallet address.'
+      );
     }
 
-    req.userWallet = text;
-    req.step = 'AWAITING_TX';
+    request.userWallet = text;
+    request.step = 'AWAITING_TX';
 
-    await req.save();
+    await request.save();
 
     return ctx.reply(
 `Wallet saved.
 
 Please pay ${process.env.MINT_PRICE_ETH} Sepolia ETH to:
+
 ${process.env.PAYMENT_RECEIVER_ADDRESS}
 
 After payment, send me the transaction hash.`
     );
   }
 
-  if (req.step === 'AWAITING_TX') {
+  if (request.step === 'AWAITING_TX') {
     if (!/^0x([A-Fa-f0-9]{64})$/.test(text)) {
-      return ctx.reply('Invalid transaction hash. Please send a valid tx hash.');
+      return ctx.reply(
+        'Invalid transaction hash. Please send a valid tx hash.'
+      );
     }
 
-    const duplicate = await MintRequest.findOne({ txHash: text });
+    const duplicate = await MintRequest.findOne({
+      txHash: text
+    });
 
     if (duplicate) {
-      return ctx.reply('This transaction hash was already used. Please send a new valid transaction hash.');
+      return ctx.reply(
+        'This transaction hash was already used. Please send a new valid transaction hash.'
+      );
     }
 
-    req.txHash = text;
-    req.step = 'PROCESSING';
+    request.txHash = text;
+    request.step = 'PROCESSING';
 
-    await req.save();
+    await request.save();
 
     await ctx.reply('Checking your payment...');
 
@@ -181,17 +219,23 @@ After payment, send me the transaction hash.`
       const verified = await verifyPayment(text);
 
       if (!verified.ok) {
-        req.step = 'AWAITING_TX';
-        req.error = verified.reason;
+        request.step = 'AWAITING_TX';
+        request.error = verified.reason;
 
-        await req.save();
+        await request.save();
 
-        return ctx.reply(`Payment not confirmed: ${verified.reason}`);
+        return ctx.reply(
+          `Payment not confirmed: ${verified.reason}`
+        );
       }
 
-      await ctx.reply('Your payment is received successfully. Creating your pixelated NFT now.');
+      await ctx.reply(
+        'Your payment is received successfully. Creating your pixelated NFT now.'
+      );
 
-      const pixelUrl = await createPixelArtWithNovita(req.originalImageUrl);
+      const pixelUrl = await createPixelArtWithNovita(
+        request.originalImageUrl
+      );
 
       const pixelImage = await axios.get(pixelUrl, {
         responseType: 'arraybuffer'
@@ -204,47 +248,64 @@ After payment, send me the transaction hash.`
 
       const metadata = {
         name: 'Pixel Mint NFT',
-        description: 'Pixelated NFT created from a Telegram user image.',
+        description:
+          'Pixelated NFT created from a Telegram user image.',
         image: pixelUpload.secure_url,
         attributes: [
-          { trait_type: 'Style', value: 'Pixel Art' },
-          { trait_type: 'Network', value: 'Sepolia' }
+          {
+            trait_type: 'Style',
+            value: 'Pixel Art'
+          },
+          {
+            trait_type: 'Network',
+            value: 'Sepolia'
+          }
         ]
       };
 
-      const metadataUpload = await uploadJson(metadata, 'telegram-nft/metadata');
+      const metadataUpload = await uploadJson(
+        metadata,
+        'telegram-nft/metadata'
+      );
 
-      const mint = await mintNFT(req.userWallet, metadataUpload.secure_url);
+      const mint = await mintNFT(
+        request.userWallet,
+        metadataUpload.secure_url
+      );
 
-      req.pixelImageUrl = pixelUpload.secure_url;
-      req.metadataUrl = metadataUpload.secure_url;
-      req.mintTxHash = mint.txHash;
-      req.tokenId = mint.tokenId;
-      req.step = 'DONE';
+      request.pixelImageUrl = pixelUpload.secure_url;
+      request.metadataUrl = metadataUpload.secure_url;
+      request.mintTxHash = mint.txHash;
+      request.tokenId = mint.tokenId;
+      request.step = 'DONE';
 
-      await req.save();
+      await request.save();
 
       return ctx.reply(
 `NFT minted successfully.
 
-Token ID: ${mint.tokenId || 'Check transaction logs'}
+Token ID: ${mint.tokenId || 'Check transaction'}
 Mint TX: ${mint.txHash}
 Image: ${pixelUpload.secure_url}`
       );
-    } catch (err) {
-      req.step = 'FAILED';
-      req.error = err.message;
+    } catch (error) {
+      request.step = 'FAILED';
+      request.error = error.message;
 
-      await req.save();
+      await request.save();
 
-      console.error(err);
+      console.error(error);
 
-      return ctx.reply(`Mint failed: ${err.message}\nSend /start to try again.`);
+      return ctx.reply(
+        `Mint failed: ${error.message}\n\nSend /start to try again.`
+      );
     }
   }
 
-  if (req.step === 'PROCESSING') {
-    return ctx.reply('Your NFT is still processing. Please wait for the result.');
+  if (request.step === 'PROCESSING') {
+    return ctx.reply(
+      'Your NFT is still processing. Please wait.'
+    );
   }
 
   return ctx.reply('Send /start to begin.');
@@ -270,8 +331,8 @@ export default async function handler(req, res) {
 
   try {
     await bot.handleUpdate(req.body, res);
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error(error);
 
     if (!res.headersSent) {
       res.status(500).send('Bot error');
