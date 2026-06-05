@@ -278,15 +278,9 @@ After payment, send me the transaction hash.`
 
       const pixelUrl = await createPixelArtWithNovita(request.originalImageUrl);
 
-      const pixelImage = await axios.get(pixelUrl, {
-        responseType: 'arraybuffer'
-      });
-
-      const pixelUpload = await uploadBuffer(
-        Buffer.from(pixelImage.data),
-        'telegram-nft/pixelated'
-      );
-
+const pixelUpload = {
+  secure_url: pixelUrl
+};
       if (!pixelUpload?.secure_url) {
         throw new Error('Cloudinary pixel image upload failed.');
       }
