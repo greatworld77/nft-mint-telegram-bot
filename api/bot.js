@@ -11,6 +11,11 @@ import { verifyPayment } from '../lib/payment.js';
 import { createPixelArtWithNovita } from '../lib/novita.js';
 import { mintNFT } from '../lib/mint.js';
 
+import {
+  uploadImageToIPFS,
+  uploadMetadataToIPFS
+} from '../lib/ipfs.js';
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 function getErrorMessage(error) {
@@ -85,7 +90,7 @@ How to use this bot:
 ${process.env.PAYMENT_RECEIVER_ADDRESS}
 
 4. Send your transaction hash.
-5. Your image will become an NFT.
+5. Your image will become a pixelated NFT.
 6. The NFT will be minted to your wallet.
 
 Please send your image now.`
@@ -118,9 +123,7 @@ bot.on('photo', async (ctx) => {
     const request = await getActiveRequest(ctx);
 
     if (request.step !== 'AWAITING_IMAGE') {
-      return ctx.reply(
-        'I already received your image. Please continue with the next step.'
-      );
+      return ctx.reply('I already received your image. Please continue with the next step.');
     }
 
     const photos = ctx.message.photo;
@@ -179,9 +182,7 @@ bot.on('document', async (ctx) => {
     const request = await getActiveRequest(ctx);
 
     if (request.step !== 'AWAITING_IMAGE') {
-      return ctx.reply(
-        'I already received your image. Please continue with the next step.'
-      );
+      return ctx.reply('I already received your image. Please continue with the next step.');
     }
 
     const buffer = await getTelegramFileBuffer(document.file_id);
@@ -226,9 +227,7 @@ bot.on('text', async (ctx) => {
 
   if (request.step === 'AWAITING_WALLET') {
     if (!ethers.isAddress(text)) {
-      return ctx.reply(
-        'Invalid wallet address. Please send a valid ETH wallet address.'
-      );
+      return ctx.reply('Invalid wallet address. Please send a valid ETH wallet address.');
     }
 
     request.userWallet = text;
@@ -255,9 +254,7 @@ After payment, send me the transaction hash.`
     const duplicate = await MintRequest.findOne({ txHash: text });
 
     if (duplicate) {
-      return ctx.reply(
-        'This transaction hash was already used. Please send a new valid transaction hash.'
-      );
+      return ctx.reply('This transaction hash was already used. Please send a new valid transaction hash.');
     }
 
     request.txHash = text;
@@ -279,16 +276,21 @@ After payment, send me the transaction hash.`
         return ctx.reply(`Payment not confirmed: ${verified.reason}`);
       }
 
-      await ctx.reply(
-        'Your payment is received successfully. Creating your NFT now.'
-      );
+      await ctx.reply('Your payment is received successfully. Creating your pixelated NFT now.');
 
       const pixelUrl = await createPixelArtWithNovita(request.originalImageUrl);
 
+      await ctx.reply('Uploading pixelated image to IPFS...');
+
+      const imageIPFS = await uploadImageToIPFS(
+        pixelUrl,
+        `pixel-${request._id}.png`
+      );
+
       const metadata = {
         name: 'Pixel Mint NFT',
-        description: 'NFT created from a Telegram user image.',
-        image: pixelUrl,
+        description: 'Pixelated NFT created from a Telegram user image.',
+        image: imageIPFS.ipfsUrl,
         attributes: [
           {
             trait_type: 'Style',
@@ -301,19 +303,19 @@ After payment, send me the transaction hash.`
         ]
       };
 
-      const metadataBase64 = Buffer.from(
-        JSON.stringify(metadata)
-      ).toString('base64');
+      await ctx.reply('Uploading NFT metadata to IPFS...');
 
-      const tokenURI = `data:application/json;base64,${metadataBase64}`;
+      const metadataIPFS = await uploadMetadataToIPFS(metadata);
+
+      await ctx.reply('Minting NFT to your wallet...');
 
       const mint = await mintNFT(
         request.userWallet,
-        tokenURI
+        metadataIPFS.ipfsUrl
       );
 
-      request.pixelImageUrl = pixelUrl;
-      request.metadataUrl = tokenURI;
+      request.pixelImageUrl = imageIPFS.ipfsUrl;
+      request.metadataUrl = metadataIPFS.ipfsUrl;
       request.mintTxHash = mint.txHash;
       request.tokenId = mint.tokenId;
       request.step = 'DONE';
@@ -325,7 +327,12 @@ After payment, send me the transaction hash.`
 
 Token ID: ${mint.tokenId || 'Check transaction'}
 Mint TX: ${mint.txHash}
-Image: ${pixelUrl}`
+
+NFT Metadata:
+${metadataIPFS.gatewayUrl}
+
+NFT Image:
+${imageIPFS.gatewayUrl}`
       );
     } catch (error) {
       request.step = 'FAILED';
